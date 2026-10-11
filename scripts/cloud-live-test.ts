@@ -1,0 +1,116 @@
+import "./env";
+import assert from "node:assert/strict";
+import { randomBytes, randomUUID } from "node:crypto";
+import { chromium, expect } from "@playwright/test";
+import sharp from "sharp";
+import { getDb } from "../lib/db";
+import { hashPassword, hashToken } from "../lib/password";
+import { incrementRateLimit } from "../lib/rate-limit";
+import { getBlobNames } from "../lib/blob-sas";
+import { cloudStorage, safeCloudError } from "./cloud-common";
+
+async function main() {
+  const base = new URL(process.env.APP_URL || "http://localhost:3000").origin;
+  const ready = await fetch(base, { signal: AbortSignal.timeout(10000) });
+  if (!ready.ok) throw new Error("The app is not ready. Initialize the database and start npm run dev first.");
+  const db = getDb();
+  const runId = randomUUID();
+  const email = `integration-${runId}@example.invalid`;
+  const password = randomBytes(24).toString("base64url");
+  const name = `联调验证-${runId.slice(0, 8)}`;
+  const uploadIds = new Set<string>();
+  const personIds = new Set<string>();
+  const limiterKey = hashToken(`integration:${runId}`);
+  let adminId: string | undefined;
+  const browser = await chromium.launch();
+  try {
+    const admin = await db.admin.create({ data: { email, passwordHash: await hashPassword(password) } });
+    adminId = admin.id;
+    const page = await browser.newPage({ viewport: { width: 1366, height: 1000 } });
+    const guest = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    guest.on("pageerror", (error) => errors.push(error.message));
+    await page.goto(`${base}/admin/login`);
+    await page.getByLabel("管理员邮箱").fill(email);
+    await page.getByLabel("登录密码").fill(password);
+    await page.getByRole("button", { name: "进入创作后台" }).click();
+    await page.waitForURL(`${base}/admin`);
+    await page.getByRole("link", { name: "添加人物", exact: true }).first().click();
+    await page.getByLabel("名称", { exact: false }).fill(name);
+    await page.getByLabel("外号", { exact: true }).fill("云端验证者");
+    await page.getByLabel("简介", { exact: false }).fill("这是一条自动化联调临时记录，测试后会删除。人物图片经过真实 Azure Blob 直传与云端校验。");
+    const image = await sharp({ create: { width: 480, height: 640, channels: 3, background: "#66877a" } }).png().toBuffer();
+    const ticketResponse = page.waitForResponse((response) => response.url() === `${base}/api/uploads` && response.request().method() === "POST");
+    await page.getByLabel("上传人物主图", { exact: true }).setInputFiles({ name: "integration-test.png", mimeType: "image/png", buffer: image });
+    const ticket = await (await ticketResponse).json();
+    assert.ok(ticket.uploadId, "Upload authorization did not return an ID");
+    uploadIds.add(ticket.uploadId);
+    await expect(page.locator(".image-url-input").first()).toHaveValue(/^\/media\//, { timeout: 60000 });
+    const mediaUrl = await page.locator(".image-url-input").first().inputValue();
+    const mediaResponse = await fetch(`${base}${mediaUrl}`);
+    assert.equal(mediaResponse.status, 200);
+    assert.equal(mediaResponse.headers.get("content-type"), "image/webp");
+    const createResponse = page.waitForResponse((response) => response.url() === `${base}/api/people` && response.request().method() === "POST");
+    await page.getByRole("button", { name: "保存人物", exact: true }).click();
+    const createdResponse = await createResponse;
+    assert.equal(createdResponse.status(), 201);
+    const { person } = await createdResponse.json();
+    personIds.add(person.id);
+    await page.waitForURL(`${base}/admin/people/${person.id}`);
+    await guest.goto(`${base}/people/${person.slug}`);
+    await expect(guest.getByRole("heading", { name: "这位主角，暂未登场。" })).toBeVisible();
+
+    await page.getByLabel("发布状态").selectOption("published");
+    const publish = page.waitForResponse((response) => response.url() === `${base}/api/people/${person.id}` && response.request().method() === "PUT");
+    await page.getByRole("button", { name: "保存人物", exact: true }).click();
+    assert.equal((await publish).status(), 200);
+    await guest.reload();
+    await expect(guest.locator("h1")).toContainText(name);
+    await expect(guest.locator(".spotlight-alias")).toContainText("云端验证者");
+    await guest.waitForFunction(() => { const image = document.querySelector(".spotlight-image img") as HTMLImageElement; return image?.naturalWidth > 0 && !image.src.includes("placeholder.svg"); });
+    assert.equal(await guest.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);
+    const unauthorized = await fetch(`${base}/api/people`, { method: "POST", headers: { Origin: base, "Content-Type": "application/json" }, body: "{}" });
+    assert.equal(unauthorized.status, 401);
+
+    await page.getByLabel("简介", { exact: false }).fill("已更新的联调简介：名称、外号、简介全部在人物画面内展示。");
+    const edit = page.waitForResponse((response) => response.url() === `${base}/api/people/${person.id}` && response.request().method() === "PUT");
+    await page.getByRole("button", { name: "保存人物", exact: true }).click();
+    assert.equal((await edit).status(), 200);
+    await guest.reload();
+    await expect(guest.getByRole("region", { name: "简介" })).toContainText("已更新的联调简介");
+    await page.getByLabel("发布状态").selectOption("draft");
+    const unpublish = page.waitForResponse((response) => response.url() === `${base}/api/people/${person.id}` && response.request().method() === "PUT");
+    await page.getByRole("button", { name: "保存人物", exact: true }).click();
+    assert.equal((await unpublish).status(), 200);
+    await expect(page.getByText("草稿已保存，仅管理员可见。", { exact: true })).toBeVisible();
+    await guest.reload();
+    await expect(guest.getByRole("heading", { name: "这位主角，暂未登场。" })).toBeVisible();
+    await page.getByRole("link", { name: "返回人物管理", exact: true }).click();
+    await page.getByRole("button", { name: `删除${name}`, exact: true }).click();
+    const deletion = page.waitForResponse((response) => response.url() === `${base}/api/people/${person.id}` && response.request().method() === "DELETE");
+    await page.getByRole("button", { name: "确认删除", exact: true }).click();
+    assert.equal((await deletion).status(), 200);
+    assert.equal(await db.person.findUnique({ where: { id: person.id } }), null);
+    const increments = await Promise.all(Array.from({ length: 6 }, () => incrementRateLimit(db, limiterKey)));
+    assert.deepEqual(increments.sort((a, b) => a - b), [1, 2, 3, 4, 5, 6]);
+    await page.getByRole("button", { name: "安全退出" }).click();
+    await page.waitForURL(`${base}/admin/login`);
+    assert.deepEqual(errors, []);
+    console.log(JSON.stringify({ liveMySQL: "passed", login: "passed", realBlobUpload: "passed", draftIsolation: "passed", publishEditDelete: "passed", mysqlAtomicCounter: "passed", mobileOverflow: false }));
+  } finally {
+    await browser.close();
+    if (adminId) for (const upload of await db.mediaUpload.findMany({ where: { adminId }, select: { id: true } })) uploadIds.add(upload.id);
+    await db.person.deleteMany({ where: { id: { in: [...personIds] } } });
+    await db.loginAttempt.deleteMany({ where: { key: { in: [limiterKey, hashToken(`email:${email}`), ...(adminId ? [hashToken(`upload:${adminId}`)] : [])] } } });
+    if (adminId) await db.admin.delete({ where: { id: adminId } });
+    const { container } = cloudStorage();
+    for (const id of uploadIds) {
+      const names = getBlobNames(id);
+      await Promise.all([container.getBlockBlobClient(names.original).deleteIfExists(), container.getBlockBlobClient(names.final).deleteIfExists()]);
+    }
+    await db.$disconnect();
+    console.log("Only this run's temporary admin, people and blobs were cleaned up.");
+  }
+}
+main().catch((error) => { console.error(JSON.stringify(safeCloudError(error))); process.exitCode = 1; });

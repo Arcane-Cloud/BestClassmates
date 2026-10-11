@@ -1,0 +1,73 @@
+generator client {
+  provider      = "prisma-client-js"
+  engineType    = "library"
+  binaryTargets = ["native", "rhel-openssl-1.1.x", "rhel-openssl-3.0.x"]
+}
+
+datasource db {
+  provider  = "mysql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model Person {
+  id          String   @id @default(uuid()) @db.Char(36)
+  name        String   @db.VarChar(60)
+  nickname    String   @default("") @db.VarChar(60)
+  slug        String   @unique(map: "people_slug_key") @db.VarChar(80)
+  biography   String   @db.Text
+  avatar      String   @db.Text
+  portrait    String   @db.Text
+  background  String   @db.Text
+  accentColor String   @map("accent_color") @db.VarChar(7)
+  sortOrder   Int      @default(0) @map("sort_order")
+  status      String   @default("draft") @db.VarChar(12)
+  createdAt   DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.DateTime(3)
+
+  @@index([status, sortOrder], map: "people_public_order_idx")
+  @@map("people")
+}
+
+model Admin {
+  id           String        @id @default(uuid()) @db.Char(36)
+  email        String        @unique(map: "admins_email_key") @db.VarChar(254)
+  passwordHash String        @map("password_hash") @db.Text
+  createdAt    DateTime      @default(now()) @map("created_at") @db.DateTime(3)
+  sessions     Session[]
+  uploads      MediaUpload[]
+
+  @@map("admins")
+}
+
+model Session {
+  tokenHash String   @id @map("token_hash") @db.VarChar(64)
+  adminId   String   @map("admin_id") @db.Char(36)
+  expiresAt DateTime @map("expires_at") @db.DateTime(3)
+  admin     Admin    @relation(fields: [adminId], references: [id], onDelete: Cascade, onUpdate: Cascade, map: "sessions_admin_id_fkey")
+
+  @@index([expiresAt], map: "session_expiry_idx")
+  @@map("sessions")
+}
+
+model LoginAttempt {
+  key      String   @id @db.VarChar(64)
+  attempts Int      @default(1)
+  resetAt  DateTime @map("reset_at") @db.DateTime(3)
+
+  @@map("login_attempts")
+}
+
+model MediaUpload {
+  id            String    @id @default(uuid()) @db.Char(36)
+  adminId       String    @map("admin_id") @db.Char(36)
+  expectedBytes Int       @map("expected_bytes")
+  mimeType      String    @map("mime_type") @db.VarChar(32)
+  createdAt     DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+  expiresAt     DateTime  @map("expires_at") @db.DateTime(3)
+  completedAt   DateTime? @map("completed_at") @db.DateTime(3)
+  admin         Admin     @relation(fields: [adminId], references: [id], onDelete: Cascade, onUpdate: Cascade, map: "media_uploads_admin_id_fkey")
+
+  @@index([expiresAt], map: "media_uploads_expiry_idx")
+  @@map("media_uploads")
+}

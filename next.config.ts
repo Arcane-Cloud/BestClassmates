@@ -3,6 +3,7 @@ import { getConfiguredBlobOrigin } from "./lib/blob-config";
 
 const blobOrigin = getConfiguredBlobOrigin(process.env);
 const config: NextConfig = {
+  output: 'standalone',
   poweredByHeader: false,
   serverExternalPackages: ["@prisma/client", "@azure/storage-blob", "sharp"],
   outputFileTracingIncludes: { "/**": ["./node_modules/.prisma/client/**/*"] },

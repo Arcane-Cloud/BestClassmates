@@ -2,9 +2,9 @@
 
 打开网站即为**人物全览**。点击人物后进入车手登场式展示：人物图片铺底，名称、外号与简介叠加在同一页，配合光扫、遮罩、轮廓字与轻量视差。
 
-**技术栈：** Next.js 16.3.8 · React 19.3 · TypeScript · Motion · Prisma 6.19 · **Azure MySQL + Azure Blob Storage**。
+**技术栈：** Next.js 16.3.8 · React 19.3 · TypeScript · GSAP · Prisma 6.19 · **Azure MySQL + Azure Blob Storage**。
 
-面向 Node.js Serverless，不依赖本地媒体磁盘，不使用 Edge Runtime。
+面向 Node.js Serverless，提供 EdgeOne Maker 项目配置 `edgeone.json`。不依赖本地媒体磁盘，不使用 Edge Runtime。
 
 ## 界面与内容
 
@@ -41,7 +41,7 @@ APP_URL=http://localhost:3000
 ADMIN_EMAIL=admin@example.com
 ADMIN_PASSWORD=
 AZURE_STORAGE_CONNECTION_STRING="DefaultEndpointsProtocol=https;AccountName=YOUR_ACCOUNT;AccountKey=YOUR_BASE64_KEY;EndpointSuffix=core.windows.net"
-AZURE_STORAGE_CONTAINER=classmates-media
+AZURE_STORAGE_CONTAINER=classbbs
 ```
 
 - 密码中的 `@` 必须编码为 `%40`，其他保留字符也应进行 URL 编码。
@@ -66,14 +66,9 @@ npm run cloud:inspect
 npm run cloud:blob
 ```
 
-此命令会：
+这是可选的管理员/维护命令：在不存在时创建私有容器，追加必要 CORS（不替换已有规则），执行真实上传验证并删除本次测试产生的 Blob。EdgeOne 运行时不会自动修改 Azure 账户级 CORS，避免无意更改共享 Storage Account 上其他应用的规则。
 
-1. 在不存在时创建指定的**私有容器**；若同名容器已公开，则停止，不擅自改变其访问策略。
-2. 保留已有 CORS 规则，补充 `APP_URL` 和本地测试源 `http://localhost:3103` 的 `PUT, OPTIONS` 规则。已有五条规则且无法安全添加时停止，不覆盖其他应用。
-3. 实际测试短时、仅创建权限 SAS 上传、拒绝覆盖、图片处理、匿名读取拒绝、只读 SAS 读取，以及 CORS 预检。
-4. 仅删除本次测试创建的两个临时 Blob；保留容器和 CORS。
-
-生产域名变化时要补充相应的精确 CORS 来源，不能使用通配来源替代。存储防火墙/Private Endpoint 的网络策略也必须允许浏览器访问；CORS 和 SAS 不能绕过网络隔离。
+部署前在 Azure Storage 的 Blob service CORS 中添加 EdgeOne 生产域名和需要使用的预览域名，允许 `PUT, OPTIONS`，允许请求头 `content-type,x-ms-blob-type`，暴露响应头 `etag,x-ms-request-id`。只允许实际需要的 HTTPS 来源，不要使用通配来源。Storage 防火墙也必须允许浏览器和函数访问。
 
 ### 3. MySQL 迁移与初始资料
 
@@ -182,13 +177,33 @@ npm run test:e2e
 
 `test:cloud` 才是实际 MySQL/Blob 联调；模拟测试通过不代表云资源已迁移。
 
-## 部署
+## EdgeOne Maker / Serverless 部署
 
-- 构建：`npm run build`。Node.js Serverless，不使用 Edge。
-- 环境变量同时配置到构建与运行环境；连接串不能变成公开变量。
-- 发布前独立执行数据库迁移，不在函数请求中执行迁移。
-- 图片处理函数声明 60 秒上限，确认套餐时间与内存支持。
-- 配置准确的 `APP_URL`、私有容器、精确 CORS、原图生命周期、数据库与 Blob 备份。
-- 预览和生产使用独立资源，避免测试写入正式人物数据。
+项目根目录包含 EdgeOne `edgeone.json`，默认安装命令为 `npm ci --include=dev`、构建命令为 `npm run build`，使用平台支持的 Node.js `22.11.0`。保留 Next.js 框架自动识别和 SSR，不设置静态导出，也不填写猜测的输出目录。云函数最长执行时间配置为 120 秒；Prisma、Azure SDK 和 Sharp 保留为 Node 外部依赖，Prisma Client 引擎纳入函数文件。
+
+在 EdgeOne Maker 导入 Git 仓库后，设置以下**服务端环境变量**。凭据应在预览/生产运行环境与构建环境按平台要求配置，绝不能使用 `NEXT_PUBLIC_` 前缀：
+
+```dotenv
+DATABASE_URL=mysql://USER:ENCODED_PASSWORD@SERVER.mysql.database.azure.com:3306/best_classmates?sslaccept=strict
+DIRECT_URL=mysql://USER:ENCODED_PASSWORD@SERVER.mysql.database.azure.com:3306/best_classmates?sslaccept=strict
+APP_URL=https://你的EdgeOne生产域名
+ADMIN_EMAIL=3847796913@qq.com
+ADMIN_PASSWORD=设置至少12位的高强度密码
+AZURE_STORAGE_CONNECTION_STRING=你的Azure Storage Connection String
+AZURE_STORAGE_CONTAINER=classbbs
+```
+
+安装阶段会生成 Prisma Client，构建阶段只执行 Prisma 生成与 `next build`；**不会连接数据库、执行迁移、创建管理员、播种人物、修改 Azure 容器/CORS**。这是为了保证 Serverless 构建可重复且不会因预览构建误写生产数据。
+
+首次发布前必须在有数据库访问权限的环境运行一次 `npm run cloud:initialize`；它会在 TLS 确认后应用迁移、创建初始管理员并向空库写入演示人物。该引导目前是有意保留的独立管理步骤，不会由 Maker 的 build 自动执行。EdgeOne Maker 若只提供 install/build 而不提供初始化命令，可在本地/CI 运行一次，然后再发布；不要把此脚本设置为每次部署的构建钩子。生产首次登录后立即在 `.env.local` 或平台 Secret 管理中妥善保管/轮换管理员凭据。
+
+部署前还需：
+
+1. 在 Azure Blob Service CORS 中将 `APP_URL` 生产域名和所需预览域名加入允许源，允许 `PUT, OPTIONS`，允许 `content-type,x-ms-blob-type` 请求头，暴露 `etag,x-ms-request-id`。EdgeOne 运行时不会自动改动共享账户级 CORS。
+2. 确保 Azure MySQL 和 Blob 网络策略允许 EdgeOne 函数出口访问。Prisma `binaryTargets` 已包含 `native`、`rhel-openssl-1.1.x`、`rhel-openssl-3.0.x`；原生依赖应在 Linux 构建环境生成并测试。
+3. 配置 `incoming/` 原图生命周期清理、数据库与 Blob 备份；不能对 `images/` 设置同样清理规则。
+4. 先用独立预览资源验证数据库登录、图片上传与处理，再切换生产域名和资源。
+
+EdgeOne 官方配置说明：<https://pages.edgeone.ai/document/edgeone-json>。Maker 的 Next.js 支持说明未明确承诺 Next 16、Prisma 原生引擎与 Sharp 的全部组合，发布前需在目标 Maker 项目验证完整 SSR/API 路由；如果平台无法执行 Node.js 原生依赖，纯 Edge Runtime 不能运行本项目服务端。
 
 视觉借鉴赛车人物展示的编辑语言，不使用 F1 官方标识，也不代表官方关联。

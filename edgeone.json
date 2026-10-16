@@ -1,0 +1,19 @@
+{
+  "name": "best-classmates",
+  "installCommand": "npm ci --include=dev",
+  "buildCommand": "npm run build",
+  "nodeVersion": "22.11.0",
+  "cloudFunctions": {
+    "nodejs": {
+      "includeFiles": [
+        "node_modules/.prisma/client/**"
+      ],
+      "externalNodeModules": [
+        "@prisma/client",
+        "@azure/storage-blob",
+        "sharp"
+      ],
+      "maxDuration": 120
+    }
+  }
+}

@@ -3,12 +3,6 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { HttpError } from "./errors";
 export { HttpError } from "./errors";
-export function assertSameOrigin(request: Request) {
-  const configured = process.env.APP_URL;
-  if (!configured && process.env.NODE_ENV === "production") throw new HttpError(503, "请配置 APP_URL 后再使用管理后台");
-  const expected = new URL(configured || "http://localhost:3000").origin;
-  if (request.headers.get("origin") !== expected) throw new HttpError(403, "请求来源不被允许，请检查 APP_URL 配置");
-}
 export async function readLimitedBody(request: Request, limit: number) {
   const length = Number(request.headers.get("content-length"));
   if (length > limit) throw new HttpError(413, "提交内容过大");

@@ -1,10 +1,11 @@
 generator client {
   provider = "prisma-client-js"
   engineType = "library"
-  // native 供本地开发；rhel-openssl-3.0.x 供 EdgeOne 等 glibc + openssl 3.x 的 Linux 运行时。
-  // 每个额外 binaryTarget 都会给 SSR 函数包增加约 17~21MiB（EdgeOne 上限 128MiB），
-  // 不要随意追加目标；若部署环境报缺失引擎，按报错里的平台名单独补充。
-  binaryTargets = ["native", "rhel-openssl-3.0.x"]
+  // native 供本地开发；rhel-openssl-1.1.x 是 EdgeOne Node Functions 实测运行时平台
+  // （2026-10 部署报错确认）。每个额外 binaryTarget 都会给 SSR 函数包增加约 17~21MiB
+  // （EdgeOne 上限 128MiB），不要随意追加目标；若运行时报缺失引擎，按报错里的
+  // 平台名调整，并同步 scripts/trim-prisma-runtime.mjs 的 DEPLOY_ENGINE。
+  binaryTargets = ["native", "rhel-openssl-1.1.x"]
 }
 
 datasource db {

@@ -7,6 +7,16 @@ const config: NextConfig = {
   poweredByHeader: false,
   serverExternalPackages: ["@prisma/client", "@azure/storage-blob", "sharp"],
   outputFileTracingIncludes: { "/**": ["./node_modules/.prisma/client/**/*"] },
+  // library 引擎运行时不会加载这些文件（见 scripts/trim-prisma-runtime.mjs 的说明），
+  // 从追踪结果里排除，避免它们进入 standalone 输出和 EdgeOne SSR 函数包（上限 128MiB）。
+  outputFileTracingExcludes: {
+    "/**": [
+      "./node_modules/@prisma/client/runtime/*.map",
+      "./node_modules/@prisma/client/runtime/*.wasm-base64.*",
+      "./node_modules/.prisma/client/query_engine_bg.wasm",
+      "./node_modules/.prisma/client/*.tmp*",
+    ],
+  },
   async headers() {
     return [{ source: "/:path*", headers: [
       { key: "X-Content-Type-Options", value: "nosniff" },
